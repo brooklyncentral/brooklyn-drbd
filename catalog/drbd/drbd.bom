@@ -1,0 +1,422 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+brooklyn.catalog:
+  version: "1.0.0-SNAPSHOT" # BROOKLYN_DRBD_VERSION
+  publish:
+    description: |
+      DRBD is a distributed replicated storage system for the Linux platform. It is implemented as a kernel driver, 
+      several userspace management applications, and some shell scripts. DRBD is traditionally used in high availability (HA) computer clusters to provide a
+      RAID 1 like configuration over a network.
+    license_code: Apache-2.0
+    defaults:
+      drbdIconUrl: "https://s3.eu-central-1.amazonaws.com/misc-csft/drbd.jpg"
+      classpathIconUrl: &drbdIconUrl 'classpath://io.brooklyn.drbd.brooklyn-drbd:icons/drbd.png'
+  items:
+  - "https://github.com/brooklyncentral/common-catalog-utils/releases/download/v0.1.0/common.bom"
+  - id: drbd-node
+    name: "DRBD Node"
+    description: |
+      A DRBD node
+    itemType: entity
+    iconUrl: *drbdIconUrl
+    item:
+      id: drbd-node
+      name: "DRBD Node"
+      type: centos7-software-process
+      brooklyn.parameters:
+      - name: drbd.version
+        label: "DRBD Version"
+        description: |
+          The version of DRBD to install
+        type: string
+        default: 84
+      brooklyn.policies:
+      - type: org.apache.brooklyn.policy.InvokeEffectorOnCollectionSensorChange
+        brooklyn.config:
+          sensor: $brooklyn:sensor("drbd.isUp.list")
+          onAdded: detectAndUpdate
+          onRemoved: detectAndUpdate
+      brooklyn.enrichers:
+        - type: org.apache.brooklyn.enricher.stock.Propagator
+          brooklyn.config:
+            producer: $brooklyn:parent().parent()
+            propagating:
+            - $brooklyn:sensor("drbd.monitor.hostaddresses")
+            - $brooklyn:sensor("drbd.monitor.hostnames")
+            - $brooklyn:sensor("drbd.isUp.list")
+            - $brooklyn:sensor("drbd.isUps")
+      brooklyn.initializers:
+      - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector
+        brooklyn.config:
+          name: Promote
+          description: |
+            Promotes a DRBD instance to primary
+          parameters:
+            mount:
+              description: |
+                Mount the file system or not
+              defaultValue: true
+          command: |
+            sudo drbdadm primary ${DRBD_CONFIGURATION_NAME} --force
+            sudo mkfs.${FILE_SYSTEM} /dev/${DRBD_DEVICE}
+            sudo mount /dev/${DRBD_DEVICE} ${MOUNT_POINT}
+            sudo chmod 777 ${MOUNT_POINT}
+            
+      - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
+        brooklyn.config:
+          name: Demote
+          description: |
+            Demotes a DRBD instance
+          command: |
+            sudo umount -l ${MOUNT_POINT}
+            sudo drbdadm secondary ${DRBD_CONFIGURATION_NAME} --force
+            
+      - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
+        brooklyn.config:
+          shell.env:
+            DRIVE: $brooklyn:attributeWhenReady("device")
+          name: detectAndUpdate
+          description: |
+            Detects the position of this DRBD instance in the pair and promotes or demotes it
+          command: |
+            if [[ ! -f ~/started.txt ]] ; then
+              echo "Service not yet started"
+              exit 0
+            fi
+            echo ${NODE_ISUPS} > `date +%s`.txt
+            echo ${NODE_ADDRESSES} > `date +%s`.txt
+            NODE_1=`echo ${NODE_ADDRESSES} | cut -d"," -f1`
+            NODE_2=`echo ${NODE_ADDRESSES} | cut -d"," -f2`
+            HOSTNAME_1=`echo ${NODE_HOSTNAMES} | cut -d"," -f1`
+            HOSTNAME_2=`echo ${NODE_HOSTNAMES} | cut -d"," -f2`
+            ISUP_1=`echo ${NODE_ISUPS} | cut -d"," -f1`
+            ISUP_2=`echo ${NODE_ISUPS} | cut -d"," -f2`
+            
+            echo ${ISUP_1} >> `date +%s`.txt
+            echo "rebuild the config file"
+            sudo tee /etc/drbd.d/${DRBD_CONFIGURATION_NAME}.res <<-EOF
+            resource ${DRBD_CONFIGURATION_NAME} {
+            protocol C;
+            on ${HOSTNAME_1} {
+                device /dev/${DRBD_DEVICE};
+                disk /dev/${DRIVE};
+                address ${NODE_1}:${DRBD_PORT_START};
+                meta-disk internal;
+              }
+            on ${HOSTNAME_2} {
+                device /dev/${DRBD_DEVICE};
+                disk /dev/${DRIVE};
+                address ${NODE_2}:${DRBD_PORT_START};
+                meta-disk internal;
+              }
+            }
+            EOF
+            # re-scan the new config file
+            sudo drbdadm adjust all
+            echo "Adjust" >> `date +%s`.txt
+            
+            # if it's primary, configure the mount and make a file system
+            if [ "${HOST_SUBNET_ADDRESS}" == "${NODE_1}" ] || [ "${ISUP_1}" == "false" ]; then
+              echo "It's primary, so mount the file system"
+              echo "Make primary" >> `date +%s`.txt
+              sudo drbdadm primary ${DRBD_CONFIGURATION_NAME} --force
+              sudo mount /dev/${DRBD_DEVICE} ${MOUNT_POINT}
+              sudo chmod 777 ${MOUNT_POINT}
+            else
+              echo "Dont Make primary" >> `date +%s`.txt
+            fi
+            
+      - type: org.apache.brooklyn.core.sensor.ssh.SshCommandSensor
+        brooklyn.config:
+          name: is.primary
+          period: 30s
+          description: |
+            Is this primary
+          targetType: boolean
+          command: |
+            STATE=`drbd-overview 2>/dev/null | grep ${DRBD_CONFIGURATION_NAME} | awk '{print $3;}' | awk -F/ '{print $1}'`
+            if [[ "${STATE}" == *"Primary"* ]]; then
+              echo true
+            else
+              echo false
+            fi
+            
+      - type: org.apache.brooklyn.core.sensor.ssh.SshCommandSensor
+        brooklyn.config:
+          name: state
+          period: 30s
+          description: |
+            Is this primary or secondary
+          targetType: string
+          command: |
+            drbd-overview 2>/dev/null | grep ${DRBD_CONFIGURATION_NAME} | awk '{print $3;}' | awk -F/ '{print $1}'
+            
+      - type: org.apache.brooklyn.core.sensor.ssh.SshCommandSensor
+        brooklyn.config:
+          name: device
+          period: 30s
+          description: |
+            The name of the underlying device drbd is using
+          targetType: string
+          command: |
+            cat ~/drive.txt
+            
+      - type: org.apache.brooklyn.core.sensor.ssh.SshCommandSensor
+        brooklyn.config:
+          name: connected
+          period: 30s
+          description: |
+            Is the drbd link connected
+          targetType: string
+          command: |
+            drbd-overview | grep Connected
+            
+      brooklyn.config:
+        latch.customize: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
+        shell.env:
+          DRBD_VERSION: $brooklyn:config("drbd.version")
+          DRBD_DEVICE: drbd0
+          MOUNT_POINT: /mnt
+          FILE_SYSTEM: ext4
+          DRBD_CONFIGURATION_NAME: brooklyn-drbd
+          INITIAL_MOUNTPOINT: /mount/brooklyn/h
+          HOST_SUBNET_ADDRESS: $brooklyn:attributeWhenReady("host.subnet.address")
+          HOST_SUBNET_HOSTNAME: $brooklyn:attributeWhenReady("host.subnet.hostname")
+          NODE_ADDRESSES: $brooklyn:attributeWhenReady("drbd.monitor.hostaddresses")
+          NODE_HOSTNAMES: $brooklyn:attributeWhenReady("drbd.monitor.hostnames")
+          NODE_ISUPS: $brooklyn:attributeWhenReady("drbd.isUps")
+          DRBD_PORT_START: 7788
+          DRBD_PORT_END: 7799
+          IS_PRIMARY: $brooklyn:parent().config("is.primary")
+        install.command: |
+          sudo hostnamectl set-hostname ${HOST_SUBNET_HOSTNAME}
+          if [ -f "/etc/cloud/cloud.cfg" ]; then
+          sudo tee -a /etc/cloud/cloud.cfg <<-EOF
+          preserve_hostname: true
+          EOF
+          fi
+          sudo rpm -ivh http://www.elrepo.org/elrepo-release-7.0-2.el7.elrepo.noarch.rpm
+          sudo rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-elrepo.org
+          #sudo yum -y update
+          sudo yum -y install drbd${DRBD_VERSION} kmod-drbd${DRBD_VERSION} nano kernel-devel
+          
+          sudo yum -y --disablerepo='*' --enablerepo=elrepo-kernel install kernel-ml
+          # remove the oldest kernel
+          sudo rm -rf "$(ls -t /boot/vmlinuz* | tail -1)"
+          sudo grub2-mkconfig -o /boot/grub2/grub.cfg 
+          
+          # shutdown nicely
+          #trap 'exit 0' SIGINT SIGQUIT SIGTERM SIGHUP EXIT
+          #sudo shutdown -r now
+          nohup sudo bash -c "sleep 0.5; shutdown -r now" &
+          
+        customize.command: |
+          sleep 10
+          echo "Start the DRBD module"
+          sudo /sbin/modprobe drbd
+          
+          # get the device name we added with brooklyn blockstore
+          DRIVE=`lsblk | grep ${INITIAL_MOUNTPOINT} | awk '{print $1;}'`
+          NODE_1=`echo ${NODE_ADDRESSES} | cut -d"," -f1`
+          NODE_2=`echo ${NODE_ADDRESSES} | cut -d"," -f2`
+          HOSTNAME_1=`echo ${NODE_HOSTNAMES} | cut -d"," -f1`
+          HOSTNAME_2=`echo ${NODE_HOSTNAMES} | cut -d"," -f2`
+          
+          # store the drive to disk
+          echo ${DRIVE} > ~/drive.txt
+          
+          echo "Build the config file"
+          sudo umount ${INITIAL_MOUNTPOINT}
+          sudo tee /etc/drbd.d/${DRBD_CONFIGURATION_NAME}.res <<-EOF
+          resource ${DRBD_CONFIGURATION_NAME} {
+          protocol C;
+          on ${HOSTNAME_1} {
+              device /dev/${DRBD_DEVICE};
+              disk /dev/${DRIVE};
+              address ${NODE_1}:${DRBD_PORT_START};
+              meta-disk internal;
+            }
+          on ${HOSTNAME_2} {
+              device /dev/${DRBD_DEVICE};
+              disk /dev/${DRIVE};
+              address ${NODE_2}:${DRBD_PORT_START};
+              meta-disk internal;
+            }
+          }
+          EOF
+          
+          echo "Blank any filesystem"
+          sudo dd if=/dev/zero of=/dev/${DRIVE} bs=1M count=128
+          # start drbd
+          sudo drbdadm create-md ${DRBD_CONFIGURATION_NAME} --force
+          
+          # if it's primary, configure the mount and make a file system
+          if [ "${IS_PRIMARY}" == true ]; then
+            echo "It's primary, so make the file system"
+            sudo systemctl start drbd
+            sudo systemctl enable drbd
+            # The service needs to be up before we attach
+            sleep 10
+            sudo drbdadm attach ${DRBD_CONFIGURATION_NAME}
+            # We need to be attached before we become primary
+            sleep 10
+            echo "Make me primary"
+            sudo drbdadm primary ${DRBD_CONFIGURATION_NAME} --force
+            echo "Make the filesystem"
+            sudo mkfs.${FILE_SYSTEM} /dev/${DRBD_DEVICE}
+            echo "Mount the endpoint"
+            sudo mount /dev/${DRBD_DEVICE} ${MOUNT_POINT}
+            sudo chmod 777 ${MOUNT_POINT}
+          fi
+        launch.command: |
+          sudo systemctl start drbd
+          sudo systemctl enable drbd
+          if [ "${IS_PRIMARY}" != "true" ]; then
+            echo "Non-primary node, attach the device"
+            sudo drbdadm attach ${DRBD_CONFIGURATION_NAME} || true
+          fi
+          echo started > ~/started.txt
+        checkRunning.command: |
+          echo true
+        
+  - id: drbd-parent-entity
+    name: "DRBD parent entity"
+    itemType: entity
+    item:
+      id: drbd-node
+      name: "DRBD parent entity"
+      type: centos7-software-process
+      provisioning.properties:
+        # 10 mins
+        sshTriesTimeout: 600000
+        sshTries: 100
+        sshRetryDelay: 2000
+        inboundPorts:
+        - 22
+        - 7788-7799
+        customizers:
+          - $brooklyn:object:
+              type: brooklyn.location.blockstore.NewVolumeCustomizer
+              object.fields:
+                volumes:
+                - blockDevice:
+                    sizeInGb: 1
+                    deviceSuffix: 'h'
+                    deleteOnTermination: true
+                    tags:
+                      brooklyn: drbd
+                  filesystem:
+                    mountPoint: /mount/brooklyn/h
+                    filesystemType: ext4
+      brooklyn.config:
+        children.startable.mode: BACKGROUND
+        checkRunning.command: |
+          echo true
+      brooklyn.policies:
+      - type: org.apache.brooklyn.policy.ha.ServiceRestarter
+        brooklyn.config:
+          failOnRecurringFailuresInThisDuration: 5m
+      brooklyn.enrichers:
+      - type: org.apache.brooklyn.policy.ha.ServiceFailureDetector
+        brooklyn.config:
+          entityFailed.stabilizationDelay: 30s
+      brooklyn.children:
+        - type: drbd-node
+        - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
+          brooklyn.config:
+            latch.install: $brooklyn:parent().attributeWhenReady("service.isUp")
+            # customize will set the data directory to the drbd one, so block until we are primary
+            latch.customize: $brooklyn:sibling("drbd-node").attributeWhenReady("is.primary")
+            mysql.datadir: /mnt
+           
+  - id: drbd-pair
+    name: "DRBD Pair"
+    itemType: entity
+    iconUrl: *drbdIconUrl
+    item:
+      type: cluster
+      id: drbd-pair
+      name: "DRBD Pair"
+      brooklyn.config:
+        cluster.initial.size: 2
+        dynamiccluster.firstmemberspec:
+          $brooklyn:entitySpec:
+            type: drbd-parent-entity
+            brooklyn.config:
+              is.primary: true
+        dynamiccluster.memberspec:
+          $brooklyn:entitySpec:
+            type: drbd-parent-entity
+            brooklyn.config:
+              is.primary: false
+      
+      brooklyn.enrichers:
+        - type: org.apache.brooklyn.enricher.stock.Aggregator
+          brooklyn.config:
+            uniqueTag: drbd-hostaddress-aggregator
+            enricher.sourceSensor: $brooklyn:sensor("host.subnet.address")
+            enricher.targetSensor: $brooklyn:sensor("drbd.monitor.hostaddress.list")
+            enricher.aggregating.fromMembers: true
+            enricher.aggregator.excludeBlank: true
+        - type: org.apache.brooklyn.enricher.stock.Joiner
+          brooklyn.config:
+            uniqueTag: drbd-hostaddress-joiner
+            enricher.sourceSensor: $brooklyn:sensor("drbd.monitor.hostaddress.list")
+            enricher.targetSensor: $brooklyn:sensor("drbd.monitor.hostaddresses")
+            enricher.joiner.quote: false
+        - type: org.apache.brooklyn.enricher.stock.Aggregator
+          brooklyn.config:
+            uniqueTag: drbd-hostname-aggregator
+            enricher.sourceSensor: $brooklyn:sensor("host.subnet.hostname")
+            enricher.targetSensor: $brooklyn:sensor("drbd.monitor.hostname.list")
+            enricher.aggregating.fromMembers: true
+            enricher.aggregator.excludeBlank: true
+        - type: org.apache.brooklyn.enricher.stock.Joiner
+          brooklyn.config:
+            uniqueTag: drbd-hostname-joiner
+            enricher.sourceSensor: $brooklyn:sensor("drbd.monitor.hostname.list")
+            enricher.targetSensor: $brooklyn:sensor("drbd.monitor.hostnames")
+            enricher.joiner.quote: false
+        - type: org.apache.brooklyn.enricher.stock.Aggregator
+          brooklyn.config:
+            uniqueTag: drbd-isUp-aggregator
+            enricher.sourceSensor: $brooklyn:sensor("service.isUp")
+            enricher.targetSensor: $brooklyn:sensor("drbd.isUp.list")
+            enricher.aggregating.fromMembers: true
+            enricher.aggregator.excludeBlank: true
+        - type: org.apache.brooklyn.enricher.stock.Joiner
+          brooklyn.config:
+            uniqueTag: drbd-isUp-joiner
+            enricher.sourceSensor: $brooklyn:sensor("drbd.isUp.list")
+            enricher.targetSensor: $brooklyn:sensor("drbd.isUps")
+            enricher.joiner.quote: false
+      brooklyn.policies:
+      - type: org.apache.brooklyn.policy.ha.ServiceReplacer
+          
+  - id: drbd-template
+    version: "1.0.0-SNAPSHOT" # BROOKLYN_DRBD_VERSION
+    name: DRBD Pair
+    itemType: template
+    iconUrl: *drbdIconUrl
+    license: Apache-2.0
+    item:
+      booklyn.config:
+        defaultDisplayName: DRBD
+      services:
+      - type: drbd-pair
