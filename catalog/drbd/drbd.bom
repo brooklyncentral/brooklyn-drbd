@@ -61,44 +61,24 @@ brooklyn.catalog:
             - $brooklyn:sensor("drbd.monitor.hostnames")
             - $brooklyn:sensor("drbd.isUp.list")
             - $brooklyn:sensor("drbd.isUps")
+            - $brooklyn:sensor("drbd.started")
       brooklyn.initializers:
-      - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector
-        brooklyn.config:
-          name: Promote
-          description: |
-            Promotes a DRBD instance to primary
-          parameters:
-            mount:
-              description: |
-                Mount the file system or not
-              defaultValue: true
-          command: |
-            sudo drbdadm primary ${DRBD_CONFIGURATION_NAME} --force
-            sudo mkfs.${FILE_SYSTEM} /dev/${DRBD_DEVICE}
-            sudo mount /dev/${DRBD_DEVICE} ${MOUNT_POINT}
-            sudo chmod 777 ${MOUNT_POINT}
-            
-      - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
-        brooklyn.config:
-          name: Demote
-          description: |
-            Demotes a DRBD instance
-          command: |
-            sudo umount -l ${MOUNT_POINT}
-            sudo drbdadm secondary ${DRBD_CONFIGURATION_NAME} --force
             
       - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
         brooklyn.config:
           shell.env:
             DRIVE: $brooklyn:attributeWhenReady("device")
+            DRBD_STARTED: $brooklyn:attributeWhenReady("drbd.started")
           name: detectAndUpdate
           description: |
             Detects the position of this DRBD instance in the pair and promotes or demotes it
           command: |
-            if [[ ! -f ~/started.txt ]] ; then
+            if [ ${DRBD_STARTED} != "started,started" ] ; then
+              echo ${NODE_ADDRESSES} [effector non started] >> ~/addressList.txt
               echo "Service not yet started"
               exit 0
             fi
+            echo ${NODE_ADDRESSES} [effector] >> ~/addressList.txt
             echo ${NODE_ISUPS} > `date +%s`.txt
             echo ${NODE_ADDRESSES} > `date +%s`.txt
             NODE_1=`echo ${NODE_ADDRESSES} | cut -d"," -f1`
@@ -179,6 +159,16 @@ brooklyn.catalog:
             
       - type: org.apache.brooklyn.core.sensor.ssh.SshCommandSensor
         brooklyn.config:
+          name: started
+          period: 30s
+          description: |
+            If the full start process has taken place on this machine
+          targetType: string
+          command: |
+            cat ~/started.txt
+            
+      - type: org.apache.brooklyn.core.sensor.ssh.SshCommandSensor
+        brooklyn.config:
           name: connected
           period: 30s
           description: |
@@ -205,6 +195,7 @@ brooklyn.catalog:
           DRBD_PORT_END: 7799
           IS_PRIMARY: $brooklyn:parent().config("is.primary")
         install.command: |
+          echo ${NODE_ADDRESSES} [install] >> ~/addressList.txt
           sudo hostnamectl set-hostname ${HOST_SUBNET_HOSTNAME}
           if [ -f "/etc/cloud/cloud.cfg" ]; then
           sudo tee -a /etc/cloud/cloud.cfg <<-EOF
@@ -227,6 +218,7 @@ brooklyn.catalog:
           nohup sudo bash -c "sleep 0.5; shutdown -r now" &
           
         customize.command: |
+          echo ${NODE_ADDRESSES} [configure] >> ~/addressList.txt
           sleep 10
           echo "Start the DRBD module"
           sudo /sbin/modprobe drbd
@@ -285,7 +277,13 @@ brooklyn.catalog:
             sudo chmod 777 ${MOUNT_POINT}
           fi
         launch.command: |
-          sudo systemctl start drbd
+          
+          until sudo systemctl start drbd
+          do
+            sleep 5
+            echo "Timed out waiting to connect, retrying"
+          done
+          
           sudo systemctl enable drbd
           if [ "${IS_PRIMARY}" != "true" ]; then
             echo "Non-primary node, attach the device"
@@ -298,6 +296,13 @@ brooklyn.catalog:
   - id: drbd-parent-entity
     name: "DRBD parent entity"
     itemType: entity
+    brooklyn.parameters:
+      - name: drbd.parent.entity
+        label: "DRBD Parent Entity"
+        description: |
+          The entity to use as the DRBD VM base
+        type: string
+        default: centos7-software-process
     item:
       id: drbd-node
       name: "DRBD parent entity"
@@ -310,6 +315,11 @@ brooklyn.catalog:
         inboundPorts:
         - 22
         - 7788-7799
+        - 8080
+        - 8443
+        - 31001
+        - 31880
+        - 3306
         customizers:
           - $brooklyn:object:
               type: brooklyn.location.blockstore.NewVolumeCustomizer
@@ -336,14 +346,43 @@ brooklyn.catalog:
       - type: org.apache.brooklyn.policy.ha.ServiceFailureDetector
         brooklyn.config:
           entityFailed.stabilizationDelay: 30s
+      - type: org.apache.brooklyn.enricher.stock.Propagator
+        brooklyn.config:
+          producer: $brooklyn:child("drbd-node")
+          propagating:
+          - $brooklyn:sensor("started")
+          - $brooklyn:sensor("is.primary")
+      - type: org.apache.brooklyn.enricher.stock.Propagator
+        brooklyn.config:
+          producer: $brooklyn:child("tomcat")
+          propagating:
+          - $brooklyn:sensor("main.uri")
       brooklyn.children:
         - type: drbd-node
+        #- type: $brooklyn:config("drbd.parent.entity")
+        #  name: Additional Entity
         - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
+          id: db
           brooklyn.config:
             latch.install: $brooklyn:parent().attributeWhenReady("service.isUp")
             # customize will set the data directory to the drbd one, so block until we are primary
             latch.customize: $brooklyn:sibling("drbd-node").attributeWhenReady("is.primary")
             mysql.datadir: /mnt
+            datastore.creation.script.url: https://github.com/apache/brooklyn-library/raw/master/examples/simple-web-cluster/src/main/resources/visitors-creation-script.sql
+            
+        - type: org.apache.brooklyn.entity.webapp.tomcat.TomcatServer
+          id: tomcat
+          name: Tomcat Server
+          brooklyn.config:
+            wars.root: http://search.maven.org/remotecontent?filepath=org/apache/brooklyn/example/brooklyn-example-hello-world-sql-webapp/0.9.0/brooklyn-example-hello-world-sql-webapp-0.9.0.war
+            java.sysprops:
+              brooklyn.example.db.url:
+                $brooklyn:formatString:
+                - "jdbc:%s%s?user=%s&password=%s"
+                - mysql://127.0.0.1:3306/
+                - "visitors"
+                - "brooklyn"
+                - "br00k11n"
            
   - id: drbd-pair
     name: "DRBD Pair"
@@ -406,6 +445,19 @@ brooklyn.catalog:
             enricher.sourceSensor: $brooklyn:sensor("drbd.isUp.list")
             enricher.targetSensor: $brooklyn:sensor("drbd.isUps")
             enricher.joiner.quote: false
+        - type: org.apache.brooklyn.enricher.stock.Aggregator
+          brooklyn.config:
+            uniqueTag: drbd-started-aggregator
+            enricher.sourceSensor: $brooklyn:sensor("started")
+            enricher.targetSensor: $brooklyn:sensor("drbd.started.list")
+            enricher.aggregating.fromMembers: true
+            enricher.aggregator.excludeBlank: true
+        - type: org.apache.brooklyn.enricher.stock.Joiner
+          brooklyn.config:
+            uniqueTag: drbd-started-joiner
+            enricher.sourceSensor: $brooklyn:sensor("drbd.started.list")
+            enricher.targetSensor: $brooklyn:sensor("drbd.started")
+            enricher.joiner.quote: false
       brooklyn.policies:
       - type: org.apache.brooklyn.policy.ha.ServiceReplacer
           
@@ -420,3 +472,9 @@ brooklyn.catalog:
         defaultDisplayName: DRBD
       services:
       - type: drbd-pair
+      - type: nginx-node
+        id: nginx
+        name: Load Balancer (nginx)
+        brooklyn.config:
+          loadbalancer.serverpool: $brooklyn:entity("drbd-pair")
+          sensor.inpool: is.primary
