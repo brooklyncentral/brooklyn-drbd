@@ -45,6 +45,7 @@ brooklyn.catalog:
         description: |
           The version of DRBD to install
         type: string
+        #default: 90
         default: 84
       brooklyn.policies:
       - type: org.apache.brooklyn.policy.InvokeEffectorOnCollectionSensorChange
@@ -87,6 +88,11 @@ brooklyn.catalog:
             HOSTNAME_2=`echo ${NODE_HOSTNAMES} | cut -d"," -f2`
             ISUP_1=`echo ${NODE_ISUPS} | cut -d"," -f1`
             ISUP_2=`echo ${NODE_ISUPS} | cut -d"," -f2`
+            
+            # quit out if there's only one ip
+            if [ "${NODE_1}" == "${NODE_2}" ]; then
+              exit 0
+            fi
             
             echo ${ISUP_1} >> `date +%s`.txt
             echo "rebuild the config file"
@@ -131,7 +137,7 @@ brooklyn.catalog:
           targetType: boolean
           command: |
             STATE=`drbd-overview 2>/dev/null | grep ${DRBD_CONFIGURATION_NAME} | awk '{print $3;}' | awk -F/ '{print $1}'`
-            if [[ "${STATE}" == *"Primary"* ]]; then
+            if [[ "${STATE}" == *"Primar"* ]]; then
               echo true
             else
               echo false
@@ -261,11 +267,21 @@ brooklyn.catalog:
           # if it's primary, configure the mount and make a file system
           if [ "${IS_PRIMARY}" == true ]; then
             echo "It's primary, so make the file system"
-            sudo systemctl start drbd
+            until sudo systemctl start drbd
+            do
+              echo "Retry connection"
+            done
+            echo "Enable system"
             sudo systemctl enable drbd
             # The service needs to be up before we attach
             sleep 10
-            sudo drbdadm attach ${DRBD_CONFIGURATION_NAME}
+            echo "Attach system"
+            # for some reason we need to use up instead of attach in drbd9
+            if [[ "${DRBD_VERSION}"  == 8* ]]; then
+              sudo drbdadm attach ${DRBD_CONFIGURATION_NAME}
+            else
+              sudo drbdadm up ${DRBD_CONFIGURATION_NAME}
+            fi
             # We need to be attached before we become primary
             sleep 10
             echo "Make me primary"
@@ -287,7 +303,11 @@ brooklyn.catalog:
           sudo systemctl enable drbd
           if [ "${IS_PRIMARY}" != "true" ]; then
             echo "Non-primary node, attach the device"
-            sudo drbdadm attach ${DRBD_CONFIGURATION_NAME} || true
+            if [[ "${DRBD_VERSION}"  == 8* ]]; then
+              sudo drbdadm attach ${DRBD_CONFIGURATION_NAME} || true
+            else
+              sudo drbdadm up ${DRBD_CONFIGURATION_NAME} || true
+            fi
           fi
           echo started > ~/started.txt
         checkRunning.command: |
@@ -296,13 +316,6 @@ brooklyn.catalog:
   - id: drbd-parent-entity
     name: "DRBD parent entity"
     itemType: entity
-    brooklyn.parameters:
-      - name: drbd.parent.entity
-        label: "DRBD Parent Entity"
-        description: |
-          The entity to use as the DRBD VM base
-        type: string
-        default: centos7-software-process
     item:
       id: drbd-node
       name: "DRBD parent entity"
@@ -352,37 +365,29 @@ brooklyn.catalog:
           propagating:
           - $brooklyn:sensor("started")
           - $brooklyn:sensor("is.primary")
-      - type: org.apache.brooklyn.enricher.stock.Propagator
+      - type: org.apache.brooklyn.enricher.stock.Aggregator
         brooklyn.config:
-          producer: $brooklyn:child("tomcat")
-          propagating:
-          - $brooklyn:sensor("main.uri")
+          uniqueTag: hostaddress-aggregator
+          enricher.producer: $brooklyn:child("user-nodes")
+          enricher.sourceSensor: $brooklyn:sensor("main.uri")
+          enricher.targetSensor: $brooklyn:sensor("main.uri.list")
+          enricher.aggregating.fromMembers: true
+          enricher.aggregator.excludeBlank: true
+      - type: org.apache.brooklyn.enricher.stock.Joiner
+        brooklyn.config:
+          uniqueTag: hostaddress-joiner
+          enricher.sourceSensor: $brooklyn:sensor("main.uri.list")
+          enricher.targetSensor: $brooklyn:sensor("main.uri")
+          enricher.joiner.quote: false
       brooklyn.children:
         - type: drbd-node
-        #- type: $brooklyn:config("drbd.parent.entity")
-        #  name: Additional Entity
-        - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
-          id: db
+        - type: cluster
+          id: user-nodes
+          name: "DRBD User entity"
           brooklyn.config:
-            latch.install: $brooklyn:parent().attributeWhenReady("service.isUp")
-            # customize will set the data directory to the drbd one, so block until we are primary
-            latch.customize: $brooklyn:sibling("drbd-node").attributeWhenReady("is.primary")
-            mysql.datadir: /mnt
-            datastore.creation.script.url: https://github.com/apache/brooklyn-library/raw/master/examples/simple-web-cluster/src/main/resources/visitors-creation-script.sql
-            
-        - type: org.apache.brooklyn.entity.webapp.tomcat.TomcatServer
-          id: tomcat
-          name: Tomcat Server
-          brooklyn.config:
-            wars.root: http://search.maven.org/remotecontent?filepath=org/apache/brooklyn/example/brooklyn-example-hello-world-sql-webapp/0.9.0/brooklyn-example-hello-world-sql-webapp-0.9.0.war
-            java.sysprops:
-              brooklyn.example.db.url:
-                $brooklyn:formatString:
-                - "jdbc:%s%s?user=%s&password=%s"
-                - mysql://127.0.0.1:3306/
-                - "visitors"
-                - "brooklyn"
-                - "br00k11n"
+            cluster.initial.size: 1
+            dynamiccluster.firstmemberspec: $brooklyn:parent().config("nodeSpecification")
+            dynamiccluster.memberspec: $brooklyn:parent().config("nodeSpecification")
            
   - id: drbd-pair
     name: "DRBD Pair"
@@ -393,17 +398,20 @@ brooklyn.catalog:
       id: drbd-pair
       name: "DRBD Pair"
       brooklyn.config:
+        #cluster.initial.size: 4
         cluster.initial.size: 2
         dynamiccluster.firstmemberspec:
           $brooklyn:entitySpec:
             type: drbd-parent-entity
             brooklyn.config:
               is.primary: true
+              nodeSpecification: $brooklyn:parent().config("nodeSpecification")
         dynamiccluster.memberspec:
           $brooklyn:entitySpec:
             type: drbd-parent-entity
             brooklyn.config:
               is.primary: false
+              nodeSpecification: $brooklyn:parent().config("nodeSpecification")
       
       brooklyn.enrichers:
         - type: org.apache.brooklyn.enricher.stock.Aggregator
@@ -472,6 +480,47 @@ brooklyn.catalog:
         defaultDisplayName: DRBD
       services:
       - type: drbd-pair
+        brooklyn.config:
+          propagatingList:
+          - $brooklyn:sensor("main.uri")
+          nodeSpecification: 
+            $brooklyn:entitySpec:
+              type: org.apache.brooklyn.entity.software.base.SameServerEntity
+              name: Application Group
+              booklyn.config:
+                defaultDisplayName: Application Group
+              brooklyn.enrichers:
+              - type: org.apache.brooklyn.enricher.stock.Propagator
+                brooklyn.config:
+                  producer: $brooklyn:child("tomcat")
+                  propagating:
+                  - $brooklyn:sensor("main.uri")
+              brooklyn.children:
+                                     
+              - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
+                id: db
+                brooklyn.config:
+                  mysql.password: s0m3rand0mp4ss
+                  latch.install: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
+                  # customize will set the data directory to the drbd one, so block until we are primary
+                  latch.customize: $brooklyn:parent().parent().sibling("drbd-node").attributeWhenReady("is.primary")
+                  mysql.datadir: /mnt
+                  datastore.creation.script.url: https://github.com/apache/brooklyn-library/raw/master/examples/simple-web-cluster/src/main/resources/visitors-creation-script.sql
+                  
+              - type: org.apache.brooklyn.entity.webapp.tomcat.TomcatServer
+                id: tomcat
+                name: Tomcat Server
+                brooklyn.config:
+                  wars.root: http://search.maven.org/remotecontent?filepath=org/apache/brooklyn/example/brooklyn-example-hello-world-sql-webapp/0.9.0/brooklyn-example-hello-world-sql-webapp-0.9.0.war
+                  java.sysprops:
+                    brooklyn.example.db.url:
+                      $brooklyn:formatString:
+                      - "jdbc:%s%s?user=%s&password=%s"
+                      - mysql://127.0.0.1:3306/
+                      - "visitors"
+                      - "brooklyn"
+                      - "br00k11n"
+              
       - type: nginx-node
         id: nginx
         name: Load Balancer (nginx)

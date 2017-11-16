@@ -1,0 +1,11 @@
+  - id: drbd-test
+    version: "1.0.0-SNAPSHOT" # BROOKLYN_DRBD_VERSION
+    name: DRBD Test
+    itemType: template
+    iconUrl: https://s3.eu-central-1.amazonaws.com/misc-csft/drbd.jpg
+    license: Apache-2.0
+    item:
+      booklyn.config:
+        defaultDisplayName: DRBD Test
+      services:
+      - type: drbd-pair
