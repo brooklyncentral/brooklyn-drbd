@@ -26,7 +26,7 @@ brooklyn.catalog:
     license_code: Apache-2.0
     defaults:
       drbdIconUrl: "https://s3.eu-central-1.amazonaws.com/misc-csft/drbd.jpg"
-      classpathIconUrl: &drbdIconUrl 'classpath://io.brooklyn.drbd.brooklyn-drbd:icons/drbd.png'
+      classpathIconUrl: &drbdIconUrl 'classpath://io.brooklyn.drbd.brooklyn-drbd:drbd.png'
   items:
   - "https://github.com/brooklyncentral/common-catalog-utils/releases/download/v0.1.0/common.bom"
   - id: drbd-node
@@ -63,8 +63,27 @@ brooklyn.catalog:
             - $brooklyn:sensor("drbd.isUp.list")
             - $brooklyn:sensor("drbd.isUps")
             - $brooklyn:sensor("drbd.started")
+        
+        - type: org.apache.brooklyn.enricher.stock.Transformer
+          brooklyn.config:
+            enricher.triggerSensors:
+                - $brooklyn:sensor("is.primary")
+                - $brooklyn:sensor("service.isUp")
+            enricher.targetSensor: $brooklyn:sensor("primary.isUp")
+            enricher.targetValue: $brooklyn:formatString("%s%s", $brooklyn:attributeWhenReady("is.primary"), $brooklyn:attributeWhenReady("service.isUp"))    
+        - type: org.apache.brooklyn.enricher.stock.Transformer
+          brooklyn.config:
+            enricher.sourceSensor: $brooklyn:sensor("primary.isUp")
+            enricher.targetSensor: $brooklyn:sensor("is.active.primary")
+            enricher.transformation:
+             $brooklyn:object:
+               type: "com.google.guava:com.google.common.base.Functions"
+               factoryMethod.name: "forMap"
+               factoryMethod.args:
+               - { "truetrue" : "true" }
+               - "false"    
+               
       brooklyn.initializers:
-            
       - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
         brooklyn.config:
           shell.env:
@@ -364,7 +383,7 @@ brooklyn.catalog:
           producer: $brooklyn:child("drbd-node")
           propagating:
           - $brooklyn:sensor("started")
-          - $brooklyn:sensor("is.primary")
+          - $brooklyn:sensor("is.active.primary")
       - type: org.apache.brooklyn.enricher.stock.Aggregator
         brooklyn.config:
           uniqueTag: hostaddress-aggregator
@@ -405,7 +424,7 @@ brooklyn.catalog:
             type: drbd-parent-entity
             brooklyn.config:
               is.primary: true
-              nodeSpecification: $brooklyn:parent().config("nodeSpecification")
+              nodeSpecification: $brooklyn:parent().config("initialNodeSpecification")
         dynamiccluster.memberspec:
           $brooklyn:entitySpec:
             type: drbd-parent-entity
@@ -468,62 +487,3 @@ brooklyn.catalog:
             enricher.joiner.quote: false
       brooklyn.policies:
       - type: org.apache.brooklyn.policy.ha.ServiceReplacer
-          
-  - id: drbd-template
-    version: "1.0.0-SNAPSHOT" # BROOKLYN_DRBD_VERSION
-    name: DRBD Pair
-    itemType: template
-    iconUrl: *drbdIconUrl
-    license: Apache-2.0
-    item:
-      booklyn.config:
-        defaultDisplayName: DRBD
-      services:
-      - type: drbd-pair
-        brooklyn.config:
-          propagatingList:
-          - $brooklyn:sensor("main.uri")
-          nodeSpecification: 
-            $brooklyn:entitySpec:
-              type: org.apache.brooklyn.entity.software.base.SameServerEntity
-              name: Application Group
-              booklyn.config:
-                defaultDisplayName: Application Group
-              brooklyn.enrichers:
-              - type: org.apache.brooklyn.enricher.stock.Propagator
-                brooklyn.config:
-                  producer: $brooklyn:child("tomcat")
-                  propagating:
-                  - $brooklyn:sensor("main.uri")
-              brooklyn.children:
-                                     
-              - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
-                id: db
-                brooklyn.config:
-                  mysql.password: s0m3rand0mp4ss
-                  latch.install: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
-                  # customize will set the data directory to the drbd one, so block until we are primary
-                  latch.customize: $brooklyn:parent().parent().sibling("drbd-node").attributeWhenReady("is.primary")
-                  mysql.datadir: /mnt
-                  datastore.creation.script.url: https://github.com/apache/brooklyn-library/raw/master/examples/simple-web-cluster/src/main/resources/visitors-creation-script.sql
-                  
-              - type: org.apache.brooklyn.entity.webapp.tomcat.TomcatServer
-                id: tomcat
-                name: Tomcat Server
-                brooklyn.config:
-                  wars.root: http://search.maven.org/remotecontent?filepath=org/apache/brooklyn/example/brooklyn-example-hello-world-sql-webapp/0.9.0/brooklyn-example-hello-world-sql-webapp-0.9.0.war
-                  java.sysprops:
-                    brooklyn.example.db.url:
-                      $brooklyn:formatString:
-                      - "jdbc:%s%s?user=%s&password=%s"
-                      - mysql://127.0.0.1:3306/
-                      - "visitors"
-                      - "brooklyn"
-                      - "br00k11n"
-              
-      - type: nginx-node
-        id: nginx
-        name: Load Balancer (nginx)
-        brooklyn.config:
-          loadbalancer.serverpool: $brooklyn:entity("drbd-pair")
-          sensor.inpool: is.primary

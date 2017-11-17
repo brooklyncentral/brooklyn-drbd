@@ -1,0 +1,94 @@
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+brooklyn.catalog:
+  version: "1.0.0-SNAPSHOT" # BROOKLYN_DRBD_VERSION
+  description: |
+    This is an example DRBD webapp application. A Tomcat and MySQL web application sat on a HA DRBD structure. 
+  publish:
+    license_code: Apache-2.0
+  items: 
+  - id: example-app
+    item: 
+      type: org.apache.brooklyn.entity.software.base.SameServerEntity
+      name: Application Group
+      booklyn.config:
+        defaultDisplayName: Application Group
+      brooklyn.enrichers:
+      - type: org.apache.brooklyn.enricher.stock.Propagator
+        brooklyn.config:
+          producer: $brooklyn:child("tomcat")
+          propagating:
+          - $brooklyn:sensor("main.uri")
+      brooklyn.children:
+                             
+      - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
+        id: db
+        brooklyn.config:
+          mysql.password: s0m3rand0mp4ss
+          latch.install: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
+          # customize will set the data directory to the drbd one, so block until we are primary
+          latch.customize: $brooklyn:parent().parent().sibling("drbd-node").attributeWhenReady("is.primary")
+          mysql.datadir: /mnt
+          
+      - type: org.apache.brooklyn.entity.webapp.tomcat.TomcatServer
+        id: tomcat
+        name: Tomcat Server
+        brooklyn.config:
+          wars.root: http://search.maven.org/remotecontent?filepath=org/apache/brooklyn/example/brooklyn-example-hello-world-sql-webapp/0.9.0/brooklyn-example-hello-world-sql-webapp-0.9.0.war
+          java.sysprops:
+            brooklyn.example.db.url:
+              $brooklyn:formatString:
+              - "jdbc:%s%s?user=%s&password=%s"
+              - mysql://127.0.0.1:3306/
+              - "visitors"
+              - "brooklyn"
+              - "br00k11n"
+              
+  - id: initial-example-app
+    item: 
+      type: example-app 
+      brooklyn.config:
+        datastore.creation.script.url: https://github.com/apache/brooklyn-library/raw/master/examples/simple-web-cluster/src/main/resources/visitors-creation-script.sql
+             
+  - id: drbd-webapp
+    name: DRBD Webapp
+    itemType: template
+    iconUrl: "https://s3.eu-central-1.amazonaws.com/misc-csft/drbd.jpg"
+    license: Apache-2.0
+    item:
+      booklyn.config:
+        defaultDisplayName: DRBD Webapp
+      services:
+      - type: drbd-pair
+        brooklyn.config:
+          propagatingList:
+          - $brooklyn:sensor("main.uri")
+          nodeSpecification: 
+            $brooklyn:entitySpec:
+              - type: example-app
+          initialNodeSpecification:
+            $brooklyn:entitySpec:
+              - type: initial-example-app
+              
+      - type: nginx-node
+        id: nginx
+        name: Load Balancer (nginx)
+        brooklyn.config:
+          loadbalancer.serverpool: $brooklyn:entity("drbd-pair")
+          sensor.inpool: is.active.primary

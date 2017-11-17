@@ -1,3 +1,0 @@
-brooklyn.catalog:
-  items:
-  - classpath://drbd/drbd.bom
