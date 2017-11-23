@@ -43,7 +43,7 @@
         </license>
     </licenses>
 
-    <!-- For the full list of developers, see contributors to https://github.com/brooklyncentral/brooklyn-ansibleentity -->
+    <!-- For the full list of developers, see contributors to https://github.com/brooklyncentral/brooklyn-drbd -->
     <developers>
         <developer>
             <name>Cloudsoft</name>
@@ -133,7 +133,7 @@
                             <artifacts>
                                 <artifact>
                                     <file>${project.build.outputDirectory}/drbd.bom</file>
-                                    <classifier>lucee</classifier>
+                                    <classifier>drbd</classifier>
                                     <type>bom</type>
                                 </artifact>
                                 <artifact>

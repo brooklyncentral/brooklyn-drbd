@@ -47,6 +47,24 @@ brooklyn.catalog:
         type: string
         #default: 90
         default: 84
+      - name: drbd.mountpoint
+        label: "DRBD Mount Point"
+        description: |
+          The place to mount the DRBD filesystem
+        type: string
+        default: /mnt
+      - name: drbd.filesystem
+        label: "DRBD Filesystem"
+        description: |
+          The type of filesystem to format the DRBD volume with
+        type: string
+        default: ext4
+      - name: initial.drive.mountpoint
+        label: "Initial Drive Mount Point"
+        description: |
+          The inital mount point of drive to use 
+        type: string
+        default: /mount/brooklyn/h
       brooklyn.policies:
       - type: org.apache.brooklyn.policy.InvokeEffectorOnCollectionSensorChange
         brooklyn.config:
@@ -140,7 +158,12 @@ brooklyn.catalog:
             if [ "${HOST_SUBNET_ADDRESS}" == "${NODE_1}" ] || [ "${ISUP_1}" == "false" ]; then
               echo "It's primary, so mount the file system"
               echo "Make primary" >> `date +%s`.txt
-              sudo drbdadm primary ${DRBD_CONFIGURATION_NAME} --force
+              # if we try to promote too fast, it can fail as there's still a primary, so retry this
+              drbd-overview
+              until sudo drbdadm primary ${DRBD_CONFIGURATION_NAME} --force
+              do
+                echo "Retrying making primary"
+              done
               sudo mount /dev/${DRBD_DEVICE} ${MOUNT_POINT}
               sudo chmod 777 ${MOUNT_POINT}
             else
@@ -207,10 +230,10 @@ brooklyn.catalog:
         shell.env:
           DRBD_VERSION: $brooklyn:config("drbd.version")
           DRBD_DEVICE: drbd0
-          MOUNT_POINT: /mnt
-          FILE_SYSTEM: ext4
+          MOUNT_POINT: $brooklyn:config("drbd.mountpoint")
+          FILE_SYSTEM: $brooklyn:config("drbd.filesystem")
           DRBD_CONFIGURATION_NAME: brooklyn-drbd
-          INITIAL_MOUNTPOINT: /mount/brooklyn/h
+          INITIAL_MOUNTPOINT: $brooklyn:config("drive.initial.mountpoint")
           HOST_SUBNET_ADDRESS: $brooklyn:attributeWhenReady("host.subnet.address")
           HOST_SUBNET_HOSTNAME: $brooklyn:attributeWhenReady("host.subnet.hostname")
           NODE_ADDRESSES: $brooklyn:attributeWhenReady("drbd.monitor.hostaddresses")
@@ -339,6 +362,38 @@ brooklyn.catalog:
       id: drbd-node
       name: "DRBD parent entity"
       type: centos7-software-process
+      brooklyn.parameters:
+      - name: drbd.version
+        label: "DRBD Version"
+        description: |
+          The version of DRBD to install
+        type: string
+        #default: 90
+        default: 84
+      - name: drbd.mountpoint
+        label: "DRBD Mount Point"
+        description: |
+          The place to mount the DRBD filesystem
+        type: string
+        default: /mnt
+      - name: drbd.filesystem
+        label: "DRBD Filesystem"
+        description: |
+          The type of filesystem to format the DRBD volume with
+        type: string
+        default: ext4
+      - name: drive.initial.mountpoint
+        label: "Initial Drive Mount Point"
+        description: |
+          The inital mount point of drive to use 
+        type: string
+        default: /mount/brooklyn/h
+      - name: drive.capacity
+        label: "Drive Capacity"
+        description: |
+          The drive capacity in gigabytes 
+        type: string
+        default: 1
       provisioning.properties:
         # 10 mins
         sshTriesTimeout: 600000
@@ -355,17 +410,24 @@ brooklyn.catalog:
         customizers:
           - $brooklyn:object:
               type: brooklyn.location.blockstore.NewVolumeCustomizer
+              deferred: true
               object.fields:
                 volumes:
-                - blockDevice:
-                    sizeInGb: 1
-                    deviceSuffix: 'h'
-                    deleteOnTermination: true
-                    tags:
-                      brooklyn: drbd
-                  filesystem:
-                    mountPoint: /mount/brooklyn/h
-                    filesystemType: ext4
+                - $brooklyn:formatString:
+                  - |
+                    blockDevice:
+                      sizeInGb: %s
+                      deviceSuffix: 'h'
+                      deleteOnTermination: true
+                      tags:
+                        brooklyn: drbd
+                    filesystem:
+                      mountPoint: %s
+                      filesystemType: %s
+                  - $brooklyn:config("drive.capacity")
+                  - $brooklyn:config("drive.initial.mountpoint")
+                  - $brooklyn:config("drbd.filesystem")
+                            
       brooklyn.config:
         children.startable.mode: BACKGROUND
         checkRunning.command: |
@@ -416,9 +478,47 @@ brooklyn.catalog:
       type: cluster
       id: drbd-pair
       name: "DRBD Pair"
+      brooklyn.parameters:
+      - name: drbd.version
+        label: "DRBD Version"
+        description: |
+          The version of DRBD to install
+        type: string
+        #default: 90
+        default: 84
+      - name: drbd.mountpoint
+        label: "DRBD Mount Point"
+        description: |
+          The place to mount the DRBD filesystem
+        type: string
+        default: /mnt
+      - name: drbd.filesystem
+        label: "DRBD Filesystem"
+        description: |
+          The type of filesystem to format the DRBD volume with
+        type: string
+        default: ext4
+      - name: drive.initial.mountpoint
+        label: "Initial Drive Mount Point"
+        description: |
+          The inital mount point of drive to use 
+        type: string
+        default: /mount/brooklyn/h
+      - name: drive.capacity
+        label: "Drive Capacity"
+        description: |
+          The drive capacity in gigabytes 
+        type: string
+        default: 1
+      - name: drbd.nodes
+        label: "Number of DRBD Nodes"
+        description: |
+          The number of DRBD nodes 
+        type: string
+        default: 2
       brooklyn.config:
         #cluster.initial.size: 4
-        cluster.initial.size: 2
+        cluster.initial.size: $brooklyn:config("drbd.nodes")
         dynamiccluster.firstmemberspec:
           $brooklyn:entitySpec:
             type: drbd-parent-entity
