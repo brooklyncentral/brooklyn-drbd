@@ -23,6 +23,7 @@ brooklyn.catalog:
   publish:
     license_code: Apache-2.0
   items: 
+  - https://github.com/brooklyncentral/brooklyn-nginx/releases/download/1.0.0-SNAPSHOT/nginx.bom
   - id: example-app
     item: 
       type: org.apache.brooklyn.entity.software.base.SameServerEntity
