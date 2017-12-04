@@ -35,8 +35,8 @@ brooklyn.catalog:
           producer: $brooklyn:child("tomcat")
           propagating:
           - $brooklyn:sensor("main.uri")
+          
       brooklyn.children:
-                             
       - type: org.apache.brooklyn.entity.database.mysql.MySqlNode
         id: db
         brooklyn.config:
@@ -77,8 +77,7 @@ brooklyn.catalog:
       services:
       - type: drbd-pair
         brooklyn.config:
-          propagatingList:
-          - $brooklyn:sensor("main.uri")
+          propagatingSensor: $brooklyn:sensor("main.uri")
           nodeSpecification: 
             $brooklyn:entitySpec:
               - type: example-app

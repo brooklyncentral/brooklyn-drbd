@@ -98,8 +98,8 @@ brooklyn.catalog:
                type: "com.google.guava:com.google.common.base.Functions"
                factoryMethod.name: "forMap"
                factoryMethod.args:
-               - { "truetrue" : "true" }
-               - "false"    
+               - "truetrue" : true
+               - false   
                
       brooklyn.initializers:
       - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
@@ -446,20 +446,42 @@ brooklyn.catalog:
           propagating:
           - $brooklyn:sensor("started")
           - $brooklyn:sensor("is.active.primary")
+      - type: org.apache.brooklyn.enricher.stock.Propagator
+        brooklyn.config:
+          producer: $brooklyn:child("drbd-node")
+          propagating:
+          - $brooklyn:sensor("started")
+          - $brooklyn:sensor("is.active.primary")
+          
       - type: org.apache.brooklyn.enricher.stock.Aggregator
         brooklyn.config:
           uniqueTag: hostaddress-aggregator
           enricher.producer: $brooklyn:child("user-nodes")
-          enricher.sourceSensor: $brooklyn:sensor("main.uri")
-          enricher.targetSensor: $brooklyn:sensor("main.uri.list")
+          enricher.sourceSensor: $brooklyn:sensor($brooklyn:config("propagatingSensor"))
+          enricher.targetSensor: $brooklyn:sensor("propagatingSensor.list")
           enricher.aggregating.fromMembers: true
           enricher.aggregator.excludeBlank: true
       - type: org.apache.brooklyn.enricher.stock.Joiner
         brooklyn.config:
           uniqueTag: hostaddress-joiner
-          enricher.sourceSensor: $brooklyn:sensor("main.uri.list")
-          enricher.targetSensor: $brooklyn:sensor("main.uri")
+          enricher.sourceSensor: $brooklyn:sensor("propagatingSensor.list")
+          enricher.targetSensor: $brooklyn:sensor("propagatingSensor.value")
           enricher.joiner.quote: false
+      - type: org.apache.brooklyn.enricher.stock.Transformer
+        brooklyn.config:
+          enricher.triggerSensors:
+          - $brooklyn:sensor("is.active.primary")
+          - $brooklyn:sensor("propagatingSensor.value")
+          enricher.sourceSensor: $brooklyn:sensor("is.active.primary")
+          enricher.targetSensor: $brooklyn:sensor($brooklyn:config("propagatingSensor"))
+          enricher.transformation:
+           $brooklyn:object:
+             type: "com.google.guava:com.google.common.base.Functions"
+             factoryMethod.name: "forMap"
+             factoryMethod.args:
+             - true: $brooklyn:attributeWhenReady("propagatingSensor.value")
+             - null
+  
       brooklyn.children:
         - type: drbd-node
         - type: cluster
@@ -533,6 +555,21 @@ brooklyn.catalog:
               nodeSpecification: $brooklyn:parent().config("nodeSpecification")
       
       brooklyn.enrichers:
+        # propagating sensor
+        - type: org.apache.brooklyn.enricher.stock.Aggregator
+          brooklyn.config:
+            uniqueTag: drbd-propagatingSensor-aggregator
+            enricher.sourceSensor: $brooklyn:sensor($brooklyn:config("propagatingSensor"))
+            enricher.targetSensor: $brooklyn:sensor("propagatingSensor.list")
+            enricher.aggregating.fromMembers: true
+            enricher.aggregator.excludeBlank: true
+        - type: org.apache.brooklyn.enricher.stock.Joiner
+          brooklyn.config:
+            uniqueTag: drbd-propagatingSensor-joiner
+            enricher.sourceSensor: $brooklyn:sensor("propagatingSensor.list")
+            enricher.targetSensor: $brooklyn:sensor($brooklyn:config("propagatingSensor"))
+            enricher.joiner.quote: false
+        # DRBD node management
         - type: org.apache.brooklyn.enricher.stock.Aggregator
           brooklyn.config:
             uniqueTag: drbd-hostaddress-aggregator
@@ -585,5 +622,16 @@ brooklyn.catalog:
             enricher.sourceSensor: $brooklyn:sensor("drbd.started.list")
             enricher.targetSensor: $brooklyn:sensor("drbd.started")
             enricher.joiner.quote: false
+        - type: org.apache.brooklyn.enricher.stock.Transformer
+          brooklyn.config:
+            enricher.sourceSensor: $brooklyn:sensor("drbd.started")
+            enricher.targetSensor: $brooklyn:sensor("drbd.all.started")
+            enricher.transformation:
+             $brooklyn:object:
+               type: "com.google.guava:com.google.common.base.Functions"
+               factoryMethod.name: "forMap"
+               factoryMethod.args:
+               - "started,started" : true
+               - false
       brooklyn.policies:
       - type: org.apache.brooklyn.policy.ha.ServiceReplacer
