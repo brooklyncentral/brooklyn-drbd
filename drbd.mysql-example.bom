@@ -65,9 +65,10 @@ brooklyn.catalog:
         brooklyn.enrichers:
           - type: org.apache.brooklyn.enricher.stock.Propagator
             brooklyn.config:
+              enricher.suppressDuplicates: true
               producer: $brooklyn:entity("drbd-pair")
               propagating:
-              - $brooklyn:sensor("drbd.all.started")
+              - drbd.all.started
         brooklyn.config:
           cluster.initial.size: 2
           dynamiccluster.memberspec:
@@ -78,11 +79,13 @@ brooklyn.catalog:
               brooklyn.enrichers:
               - type: org.apache.brooklyn.enricher.stock.Propagator
                 brooklyn.config:
+                  enricher.suppressDuplicates: true
                   producer: $brooklyn:entity("drbd-pair")
                   propagating:
-                    - $brooklyn:sensor("datastore.url")
+                    - datastore.url
               - type: org.apache.brooklyn.enricher.stock.Transformer
                 brooklyn.config:
+                  enricher.suppressDuplicates: true
                   enricher.triggerSensors:
                     - $brooklyn:sensor("datastore.url")
                   enricher.targetSensor: $brooklyn:sensor("additionalJavaParams")
