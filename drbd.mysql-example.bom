@@ -93,21 +93,46 @@ brooklyn.catalog:
                     - "visitors"
                     - "brooklyn"
                     - "br00k11n"
+              brooklyn.initializers:
+              - type: org.apache.brooklyn.core.effector.ssh.SshCommandEffector      
+                brooklyn.config:
+                  name: redeployDB
+                  description: |
+                    Redeploys the application
+                  shell.env:
+                    additionalJavaParams: $brooklyn:attributeWhenReady("additionalJavaParams")
+                    #serviceIsUp: $brooklyn:attributeWhenReady("service.isUp")
+                  command: |
+                    cd ~
+                    if [ ! -f "jetty-runner.pid" ]; then
+                      echo "Not yet started"
+                      exit 0;
+                    fi
+                    CURR_PARAMS=`cat ~/params.txt`
+                    if [ "${additionalJavaParams}" == "" ] || [ "${additionalJavaParams}" == "${CURR_PARAMS}" ]; then
+                      exit 0;
+                    fi
+                    (
+                    flock -x -w 10 200 || exit 0
+                    echo 1
+                    if [ -n "${additionalJavaParams}" ]; then
+                      echo ${additionalJavaParams} > ~/params.txt
+                    fi
+                    echo 2
+                    kill `cat ~/jetty-runner.pid` || true
+                    echo 3
+                    nohup java `cat ~/params.txt` -jar ~/jetty-runner.jar ~/run.war --port 8080 2>&1 & echo $! > ~/jetty-runner.pid
+                    echo 4
+                    ) 200>/tmp/.drbdlockfile
+                    rm /tmp/.drbdlockfile || true
+                  
               brooklyn.policies:
-              - type: org.apache.brooklyn.policy.InvokeEffectorOnCollectionSensorChange
+              - type: org.apache.brooklyn.policy.InvokeEffectorOnSensorChange
                 brooklyn.config:
                   sensor: $brooklyn:sensor("additionalJavaParams")
-                  onAdded: redeploy
-                  onRemoved: redeploy
-                  parameterName: additionalJavaParams
+                  effector: redeployDB
               brooklyn.config:
                 latch.install: $brooklyn:entity("webapp").attributeWhenReady("drbd.all.started")
                 war.url: http://search.maven.org/remotecontent?filepath=org/apache/brooklyn/example/brooklyn-example-hello-world-sql-webapp/0.9.0/brooklyn-example-hello-world-sql-webapp-0.9.0.war
-                additional.java.params: 
-                  $brooklyn:formatString:
-                    - "-Dbrooklyn.example.db.url=jdbc:%s%s?user=%s&password=%s"
-                    - $brooklyn:entity("drbd-pair").attributeWhenReady("datastore.url")
-                    - "visitors"
-                    - "brooklyn"
-                    - "br00k11n"        
+                additional.java.params: $brooklyn:attributeWhenReady("additionalJavaParams")   
           
