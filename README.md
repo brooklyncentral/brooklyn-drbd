@@ -28,15 +28,14 @@ future.
 
 The main entity is called `drbd-pair`, this provisions a pair of DRBD nodes. You can then use `nodeSpecification`
 and `initialNodeSpecification` to specify an `entitySpec` containing the blueprints you want on the nodes. An
-example of this is shown in [drbd.tomcat-example.bom](drbd.tomcat-example.bom). Finally `propagatingList` allows
-you to specify a list of sensors which will be propagated back to the entity root.
+example of this is shown in [drbd.tomcat-example.bom](drbd.tomcat-example.bom). Finally `propagatingSensor` allows
+you to specify a sensor which will be propagated back to the entity root.
 
 ```
 services:
 - type: drbd-pair
   brooklyn.config:
-    propagatingList:
-    - $brooklyn:sensor("main.uri")
+    propagatingSensor: $brooklyn:sensor("main.uri")
     nodeSpecification: 
       $brooklyn:entitySpec:
         - type: example-app
