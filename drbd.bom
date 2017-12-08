@@ -229,7 +229,7 @@ brooklyn.catalog:
             drbd-overview | grep Connected
             
       brooklyn.config:
-        latch.customize: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
+        latch.customize: $brooklyn:parent().parent().attributeWhenReady("cluster.one_and_all.members.up")
         shell.env:
           DRBD_VERSION: $brooklyn:config("drbd.version")
           DRBD_DEVICE: drbd0
