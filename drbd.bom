@@ -65,6 +65,12 @@ brooklyn.catalog:
           The inital mount point of drive to use 
         type: string
         default: /mount/brooklyn/h
+      - name: drbd.skip.install
+        label: "Skip the DRBD install"
+        description: |
+          Should we skip the DRBD install 
+        type: boolean
+        default: false
       brooklyn.policies:
       - type: org.apache.brooklyn.policy.InvokeEffectorOnCollectionSensorChange
         brooklyn.config:
@@ -240,7 +246,9 @@ brooklyn.catalog:
             drbd-overview | grep Connected
             
       brooklyn.config:
-        latch.customize: $brooklyn:parent().parent().attributeWhenReady("cluster.one_and_all.members.up")
+        install.skip: $brooklyn:config("drbd.skip.install")
+        latch.install: $brooklyn:parent().parent().attributeWhenReady("cluster.one_and_all.members.up")
+        latch.customize: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
         shell.env:
           DRBD_VERSION: $brooklyn:config("drbd.version")
           DRBD_DEVICE: drbd0
@@ -278,10 +286,11 @@ brooklyn.catalog:
           #trap 'exit 0' SIGINT SIGQUIT SIGTERM SIGHUP EXIT
           #sudo shutdown -r now
           nohup sudo bash -c "sleep 0.5; shutdown -r now" &
-          
+        pre.customize.command: |
+          # wait until the ips from the nodes have been propagated which may take a second or two
+          sleep 10
         customize.command: |
           echo ${NODE_ADDRESSES} [configure] >> ~/addressList.txt
-          sleep 10
           echo "Start the DRBD module"
           sudo /sbin/modprobe drbd
           
@@ -418,6 +427,12 @@ brooklyn.catalog:
           The drive capacity in gigabytes 
         type: string
         default: 1
+      - name: drbd.skip.install
+        label: "Skip the DRBD install"
+        description: |
+          Should we skip the DRBD install 
+        type: boolean
+        default: false
       provisioning.properties:
         # 10 mins
         sshTriesTimeout: 600000
@@ -560,6 +575,12 @@ brooklyn.catalog:
           The number of DRBD nodes 
         type: string
         default: 2
+      - name: drbd.skip.install
+        label: "Skip the DRBD install"
+        description: |
+          Should we skip the DRBD install 
+        type: boolean
+        default: false
       brooklyn.config:
         #cluster.initial.size: 4
         cluster.initial.size: $brooklyn:config("drbd.nodes")
