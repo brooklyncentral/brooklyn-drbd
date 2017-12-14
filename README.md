@@ -23,6 +23,7 @@ future.
 | drbd.filesystem               | ext4            | The filesystem format of the DRBD volume              |
 | drive.capacity                | 1               | The size in Gigabytes of the mirrored volume          |
 | drbd.nodes                    | 2               | The number of nodes (NB. 2 currently only supported)  |
+| drbd.skip.install             | false           | If we should skip the install of DRBD                 |
 
 ## Usage
 
