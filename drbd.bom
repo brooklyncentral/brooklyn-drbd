@@ -248,7 +248,7 @@ brooklyn.catalog:
       brooklyn.config:
         install.skip: $brooklyn:config("drbd.skip.install")
         latch.install: $brooklyn:parent().parent().attributeWhenReady("cluster.one_and_all.members.up")
-        latch.customize: $brooklyn:parent().parent().attributeWhenReady("service.isUp")
+        latch.customize: $brooklyn:parent().parent().attributeWhenReady("cluster.one_and_all.members.up")
         shell.env:
           DRBD_VERSION: $brooklyn:config("drbd.version")
           DRBD_DEVICE: drbd0
@@ -337,7 +337,8 @@ brooklyn.catalog:
           echo "Blank any filesystem"
           sudo dd if=/dev/zero of=/dev/${DRIVE} bs=1M count=128
           # start drbd
-          sudo drbdadm create-md ${DRBD_CONFIGURATION_NAME} --force
+          sudo drbdadm create-md ${DRBD_CONFIGURATION_NAME}
+          # --force
           
           # if it's primary, configure the mount and make a file system
           if [ "${IS_PRIMARY}" == true ]; then
@@ -351,11 +352,11 @@ brooklyn.catalog:
             # The service needs to be up before we attach
             sleep 10
             echo "Attach system"
-            # for some reason we need to use up instead of attach in drbd9
+            # for some reason we need to use up instead of attach in drbd9, also this may not be rqd
             if [[ "${DRBD_VERSION}"  == 8* ]]; then
-              sudo drbdadm attach ${DRBD_CONFIGURATION_NAME}
+              sudo drbdadm attach ${DRBD_CONFIGURATION_NAME} || true
             else
-              sudo drbdadm up ${DRBD_CONFIGURATION_NAME}
+              sudo drbdadm up ${DRBD_CONFIGURATION_NAME} || true
             fi
             # We need to be attached before we become primary
             sleep 10
@@ -446,6 +447,7 @@ brooklyn.catalog:
         - 31001
         - 31880
         - 3306
+        - 80
         customizers:
           - $brooklyn:object:
               type: brooklyn.location.blockstore.NewVolumeCustomizer
@@ -584,6 +586,7 @@ brooklyn.catalog:
       brooklyn.config:
         #cluster.initial.size: 4
         cluster.initial.size: $brooklyn:config("drbd.nodes")
+        dynamiccluster.zone.enable: true
         dynamiccluster.firstmemberspec:
           $brooklyn:entitySpec:
             type: drbd-parent-entity
